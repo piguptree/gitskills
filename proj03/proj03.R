@@ -1,0 +1,170 @@
+##垃圾邮件识别，朴素贝叶斯方法，机器学习：实用案例分析第三章
+##学习sapply以及管道操作，以及文本挖掘初探
+##改进空间：
+##选择贝叶斯估计计算条件概率，来解决未出现单词的计算问题
+###git 版本控制的重要性，改错之后贼麻烦
+
+library("tm")##文本挖掘必备
+library("ggplot2")##画图必备
+library("magrittr")##管道操作
+spam.path = "data/spam/"
+spam2.path = "data/spam_2/"
+easyham.path = "data/easy_ham/"
+easyham2.path = "data/easy_ham_2/"
+hardham.path = "data/hard_ham/"
+get.msg = function(path) {
+    con = file(path, open = "rt", encoding = "latin1")
+    text = readLines(con)
+    close(con)
+    ##the message always begins after the first full line break
+    ###上述观点存疑
+    id = which(text == "")
+    len = length(text)
+    if (length(id) != 0 & id[1] < len) {
+        msg = text[(id[1] + 1): len]
+        return(paste(msg, collapse = "\n"))
+    }
+}
+
+### 测试，观察源文件
+#ex.docs=dir(easyham.path)[1]
+#path=file.path(easyham.path,ex.docs)
+#coon=file(path,open = "rt",encoding = "latin1")
+#teext=readLines(coon)
+#close(coon)
+
+
+##spam
+spam.docs = spam.path%>%dir%>%.[.!="cmds"]
+all.spam = sapply(spam.docs, function(p)
+    get.msg(file.path(spam.path, p)))
+all.spam%<>%.[.!= "NULL"]
+spam.n=length(all.spam)
+
+
+
+###get tdm
+### the most important process
+get.tdm=function(doc.vec){
+    doc.corpus=Corpus(VectorSource(doc.vec))
+    control=list(stopwords=T,removePunctuation=T,
+                 removeNumbers=T,minDocFreq=2)
+    doc.dtm=TermDocumentMatrix(doc.corpus,control)
+    return(doc.dtm)
+}
+spam.tdm=get.tdm(all.spam)
+
+
+###count conditional probability
+
+spam.matrix=as.matrix(spam.tdm)
+spam.counts=rowSums(spam.matrix)
+spam.density=spam.counts/sum(spam.counts)
+spam.occurrence=sapply(1:nrow(spam.matrix),function(i)
+    {sum(spam.matrix[i,]>0)/ncol(spam.matrix)})
+spam.df=data.frame(term=names(spam.counts),
+    frequency=as.numeric(spam.counts),density=spam.density,
+    occurrence=spam.occurrence,stringsAsFactors = F)
+#head(spam.df[with(spam.df,order(-occurrence)),],15)
+
+
+###same for easy_ham
+easy_ham.docs = easyham.path%>%dir%>%.[.!="cmds"]
+all.easy_ham = sapply(easy_ham.docs, function(p)
+    get.msg(file.path(easyham.path, p)))
+all.easy_ham%<>%.[.!= "NULL"]
+easyham.n=length(all.easy_ham)
+
+
+easy_ham.tdm=get.tdm(all.easy_ham)
+
+
+###count conditional probability
+
+easy_ham.matrix=as.matrix(easy_ham.tdm)
+easy_ham.counts=rowSums(easy_ham.matrix)
+easy_ham.density=easy_ham.counts/sum(easy_ham.counts)
+easy_ham.occurrence=sapply(1:nrow(easy_ham.matrix),function(i){
+    sum(easy_ham.matrix[i,]>0)/ncol(easy_ham.matrix)})
+easy_ham.df=data.frame(term=names(easy_ham.counts),
+                   frequency=as.numeric(easy_ham.counts),density=easy_ham.density,
+                   occurrence=easy_ham.occurrence,stringsAsFactors = F)
+#head(easy_ham.df[with(easy_ham.df,order(-occurrence)),])
+
+
+###classify.email,theta is important
+###because result is too small to count!
+classify.email=function(path,training.df,
+        prior=spam.n/(easyham.n+spam.n),
+        c=1e-6,theta=50){
+    prior=prior*theta
+    c=c*theta
+    msg=get.msg(path)
+    msg.tdm=get.tdm(msg)
+    msg.freq=rowSums(as.matrix(msg.tdm))
+    #find the intersections of words
+    msg.match=intersect(names(msg.freq),training.df$term)
+    if(length(msg.match)<1){
+        return(prior*c^(length(msg.freq)))
+    }else{
+    match.prob=training.df$occurrence[match(msg.match,
+            training.df$term)]*theta
+    return(prior*prod(match.prob)*c^(length(msg.freq)-length(msg.match)))
+    }
+}
+
+
+
+### test for hardham
+### unnecessary to read or run
+hardham.docs=hardham.path%>%dir%>%.[.!="cmds"]
+n.test=length(hardham.docs)
+
+hardham.spamtest=sapply(hardham.docs,function(p)
+    classify.email(file.path(hardham.path,p),training.df = spam.df))
+
+hardham.hamtest=sapply(hardham.docs,function(p)
+    classify.email(file.path(hardham.path,p),
+                   training.df = easy_ham.df,
+                   prior = easyham.n/(easyham.n+spam.n)))
+
+rightrate=sum(hardham.spamtest<hardham.hamtest,na.rm = T)
+
+
+##封装function,关键分三类情况，会出现太小不能判断的情况
+spam.classifier=function(path){
+    pr.spam=classify.email(path,training.df = spam.df)
+    pr.ham=classify.email(path,training.df = easy_ham.df,
+                          prior = easyham.n/(easyham.n+spam.n))
+    if(pr.spam<pr.ham){
+        type="0"
+    }else{
+        if(pr.spam>pr.ham){
+            type="1"
+        }else{
+            type="unsure"
+        }
+    }
+    return(c(pr.spam,pr.ham,type))
+}
+
+hardham.docs=hardham.path%>%dir%>%.[.!="cmds"]
+easyham2.docs=easyham2.path%>%dir%>%.[.!="cmds"]
+spam2.docs=spam2.path%>%dir%>%.[.!="cmds"]
+all.res1=sapply(hardham.docs,function(p)
+    spam.classifier(file.path(hardham.path,p)))
+all.res1=data.frame(t(all.res1))
+all.res1[,4]="hardham"
+all.res2=sapply(easyham2.docs,function(p)
+    spam.classifier(file.path(easyham2.path,p)))
+all.res2=data.frame(t(all.res2))
+all.res2[,4]="easyham"
+all.res3=sapply(spam2.docs,function(p)
+    spam.classifier(file.path(spam2.path,p)))
+all.res3=data.frame(t(all.res3))
+all.res3[,4]="spam"
+res=rbind(all.res1,all.res2,all.res3)
+##关于table 的操作
+res.table=table(res[,3],res[,4])
+res.table %>% addmargins(1)
+res.table %>% prop.table(2) %>% addmargins(1) %>% round(2)
